@@ -1,6 +1,6 @@
-import socket, threading, json, pygame
+import socket, threading, json, tkinter as tk
 
-HOST = '192.168.1.42'   # ← IP соседа (узнать: ipconfig на его компе)
+HOST = '192.168.1.42'   # ← IP соседа
 PORT = 5000
 
 W, H = 800, 500
@@ -12,6 +12,7 @@ print("Подключился к серверу!")
 
 state = {}
 my_paddle = H/2 - PADDLE_H/2
+lock = threading.Lock()
 
 def receiver():
     global state
@@ -23,59 +24,80 @@ def receiver():
             buf += data
             while "\n" in buf:
                 line, buf = buf.split("\n", 1)
-                state = json.loads(line)
+                with lock:
+                    state = json.loads(line)
         except:
             break
 
 threading.Thread(target=receiver, daemon=True).start()
 
-pygame.init()
-screen = pygame.display.set_mode((W, H))
-pygame.display.set_caption("Pong — КЛИЕНТ (ты справа)")
-font = pygame.font.SysFont("Arial", 40)
-clock = pygame.time.Clock()
+# --- Tkinter (клиент играет справа) ---
+root = tk.Tk()
+root.title("Pong КЛИЕНТ (ты справа, ↑/↓)")
+canvas = tk.Canvas(root, width=W, height=H, bg="#14141e")
+canvas.pack()
 
-running = True
-while running:
-    for e in pygame.event.get():
-        if e.type == pygame.QUIT:
-            running = False
+for y in range(0, H, 30):
+    canvas.create_rectangle(W//2 - 2, y, W//2 + 2, y + 15, fill="#3c3c50", outline="")
 
-    keys = pygame.key.get_pressed()
-    if keys[pygame.K_UP]:
+paddle1 = canvas.create_rectangle(30, H/2, 30 + PADDLE_W, H/2 + PADDLE_H,
+                                   fill="#00dcff", outline="")
+paddle2 = canvas.create_rectangle(W - 30 - PADDLE_W, my_paddle, W - 30, my_paddle + PADDLE_H,
+                                   fill="#ff5a5a", outline="")
+ball = canvas.create_oval(0, 0, BALL_SIZE, BALL_SIZE, fill="white", outline="")
+
+score1_text = canvas.create_text(W//2 - 60, 30, text="0", fill="white",
+                                  font=("Arial", 32, "bold"))
+score2_text = canvas.create_text(W//2 + 60, 30, text="0", fill="white",
+                                  font=("Arial", 32, "bold"))
+win_text = canvas.create_text(W//2, H//2, text="", fill="#00ff64",
+                               font=("Arial", 28, "bold"))
+
+keys = set()
+def on_press(e):
+    keys.add(e.keysym)
+def on_release(e):
+    keys.discard(e.keysym)
+
+root.bind("<KeyPress>", on_press)
+root.bind("<KeyRelease>", on_release)
+root.focus_force()
+
+def move_client():
+    global my_paddle
+    if 'Up' in keys:
         my_paddle -= 7
-    if keys[pygame.K_DOWN]:
+    if 'Down' in keys:
         my_paddle += 7
     my_paddle = max(0, min(H - PADDLE_H, my_paddle))
-
     try:
         sock.sendall((json.dumps({"p2": my_paddle}) + "\n").encode())
     except:
         pass
+    root.after(16, move_client)
 
-    screen.fill((20, 20, 30))
-    for y in range(0, H, 30):
-        pygame.draw.rect(screen, (60, 60, 80), (W//2 - 2, y, 4, 15))
+move_client()
 
-    if state:
-        pygame.draw.rect(screen, (0, 220, 255), (30, state["p1"], PADDLE_W, PADDLE_H))
-        pygame.draw.rect(screen, (255, 90, 90), (W - 30 - PADDLE_W, my_paddle, PADDLE_W, PADDLE_H))
-        b = state["ball"]
-        pygame.draw.rect(screen, (255, 255, 255), (b["x"], b["y"], BALL_SIZE, BALL_SIZE))
+def draw():
+    with lock:
+        snap = state.copy() if state else {}
 
-        s1 = font.render(str(state["score1"]), True, (255, 255, 255))
-        s2 = font.render(str(state["score2"]), True, (255, 255, 255))
-        screen.blit(s1, (W//2 - 60, 20))
-        screen.blit(s2, (W//2 + 40, 20))
+    if snap:
+        canvas.coords(paddle1, 30, snap["p1"], 30 + PADDLE_W, snap["p1"] + PADDLE_H)
+        canvas.coords(ball, snap["ball"]["x"], snap["ball"]["y"],
+                      snap["ball"]["x"] + BALL_SIZE, snap["ball"]["y"] + BALL_SIZE)
+        canvas.itemconfig(score1_text, text=str(snap["score1"]))
+        canvas.itemconfig(score2_text, text=str(snap["score2"]))
 
-        if state["score1"] >= 5:
-            win = font.render("СОСЕД ВЫИГРАЛ 😢", True, (255, 80, 80))
-            screen.blit(win, (W//2 - 160, H//2 - 20))
-        elif state["score2"] >= 5:
-            win = font.render("ТЫ ВЫИГРАЛ! 🎉", True, (0, 255, 100))
-            screen.blit(win, (W//2 - 150, H//2 - 20))
+        if snap["score1"] >= 5:
+            canvas.itemconfig(win_text, text="СОСЕД ВЫИГРАЛ", fill="#ff5050")
+        elif snap["score2"] >= 5:
+            canvas.itemconfig(win_text, text="ТЫ ВЫИГРАЛ!", fill="#00ff64")
+        else:
+            canvas.itemconfig(win_text, text="")
 
-    pygame.display.flip()
-    clock.tick(60)
+    canvas.coords(paddle2, W - 30 - PADDLE_W, my_paddle, W - 30, my_paddle + PADDLE_H)
+    root.after(16, draw)
 
-pygame.quit()
+draw()
+root.mainloop()

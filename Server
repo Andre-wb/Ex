@@ -1,0 +1,161 @@
+import socket, threading, json, pygame
+
+HOST, PORT = '0.0.0.0', 5000
+
+W, H = 800, 500
+PADDLE_W, PADDLE_H = 15, 90
+BALL_SIZE = 15
+WIN_SCORE = 5
+
+# Состояние игры (истина живёт на сервере)
+state = {
+    "ball": {"x": W/2, "y": H/2, "vx": 5, "vy": 4},
+    "p1": H/2 - PADDLE_H/2,      # левая ракетка (сервер)
+    "p2": H/2 - PADDLE_H/2,      # правая ракетка (клиент)
+    "score1": 0,
+    "score2": 0,
+}
+clients = []
+lock = threading.Lock()
+
+def reset_ball(direction=1):
+    state["ball"] = {"x": W/2, "y": H/2,
+                     "vx": 5 * direction, "vy": 4}
+
+def physics():
+    b = state["ball"]
+    b["x"] += b["vx"]
+    b["y"] += b["vy"]
+
+    # Отскок от верха/низа
+    if b["y"] <= 0 or b["y"] + BALL_SIZE >= H:
+        b["vy"] *= -1
+
+    # Левая ракетка
+    if b["x"] <= 30 + PADDLE_W and b["x"] > 30:
+        if state["p1"] < b["y"] + BALL_SIZE and b["y"] < state["p1"] + PADDLE_H:
+            b["vx"] = abs(b["vx"])
+            # подкрутка от края
+            offset = (b["y"] + BALL_SIZE/2 - (state["p1"] + PADDLE_H/2)) / (PADDLE_H/2)
+            b["vy"] += offset * 2
+
+    # Правая ракетка
+    if b["x"] + BALL_SIZE >= W - 30 - PADDLE_W and b["x"] < W - 30:
+        if state["p2"] < b["y"] + BALL_SIZE and b["y"] < state["p2"] + PADDLE_H:
+            b["vx"] = -abs(b["vx"])
+            offset = (b["y"] + BALL_SIZE/2 - (state["p2"] + PADDLE_H/2)) / (PADDLE_H/2)
+            b["vy"] += offset * 2
+
+    # Голы
+    if b["x"] < 0:
+        state["score2"] += 1
+        reset_ball(1)
+    elif b["x"] > W:
+        state["score1"] += 1
+        reset_ball(-1)
+
+def handle_client(conn, addr):
+    print("Подключился:", addr)
+    buf = ""
+    while True:
+        try:
+            data = conn.recv(1024).decode()
+            if not data:
+                break
+            buf += data
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                msg = json.loads(line)
+                with lock:
+                    state["p2"] = max(0, min(H - PADDLE_H, msg["p2"]))
+        except Exception as e:
+            print("Отключился:", addr, e)
+            break
+    if conn in clients:
+        clients.remove(conn)
+    conn.close()
+
+def game_loop():
+    clock = pygame.time.Clock()
+    while True:
+        with lock:
+            physics()
+            snapshot = json.dumps(state)
+        dead = []
+        for c in list(clients):
+            try:
+                c.sendall((snapshot + "\n").encode())
+            except:
+                dead.append(c)
+        for c in dead:
+            clients.remove(c)
+        clock.tick(60)
+
+# --- Сеть ---
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((HOST, PORT))
+s.listen()
+print(f"Сервер запущен на порту {PORT}, жду игрока...")
+
+threading.Thread(target=game_loop, daemon=True).start()
+
+def accept_loop():
+    while True:
+        conn, addr = s.accept()
+        clients.append(conn)
+        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+
+threading.Thread(target=accept_loop, daemon=True).start()
+
+# --- Локальный pygame (играет сервер) ---
+pygame.init()
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("Pong — ХОСТ (ты слева)")
+font = pygame.font.SysFont("Arial", 40)
+clock = pygame.time.Clock()
+
+running = True
+while running:
+    for e in pygame.event.get():
+        if e.type == pygame.QUIT:
+            running = False
+
+    keys = pygame.key.get_pressed()
+    with lock:
+        if keys[pygame.K_w]:
+            state["p1"] -= 7
+        if keys[pygame.K_s]:
+            state["p1"] += 7
+        state["p1"] = max(0, min(H - PADDLE_H, state["p1"]))
+        snap = state.copy()
+
+    screen.fill((20, 20, 30))
+    # сетка
+    for y in range(0, H, 30):
+        pygame.draw.rect(screen, (60, 60, 80), (W//2 - 2, y, 4, 15))
+
+    # ракетки
+    pygame.draw.rect(screen, (0, 220, 255), (30, snap["p1"], PADDLE_W, PADDLE_H))
+    pygame.draw.rect(screen, (255, 90, 90), (W - 30 - PADDLE_W, snap["p2"], PADDLE_W, PADDLE_H))
+    # мяч
+    b = snap["ball"]
+    pygame.draw.rect(screen, (255, 255, 255), (b["x"], b["y"], BALL_SIZE, BALL_SIZE))
+
+    # счёт
+    s1 = font.render(str(snap["score1"]), True, (255, 255, 255))
+    s2 = font.render(str(snap["score2"]), True, (255, 255, 255))
+    screen.blit(s1, (W//2 - 60, 20))
+    screen.blit(s2, (W//2 + 40, 20))
+
+    if snap["score1"] >= WIN_SCORE:
+        win = font.render("ТЫ ВЫИГРАЛ! 🎉", True, (0, 255, 100))
+        screen.blit(win, (W//2 - 150, H//2 - 20))
+    elif snap["score2"] >= WIN_SCORE:
+        win = font.render("СОСЕД ВЫИГРАЛ 😢", True, (255, 80, 80))
+        screen.blit(win, (W//2 - 160, H//2 - 20))
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()

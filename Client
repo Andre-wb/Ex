@@ -1,0 +1,81 @@
+import socket, threading, json, pygame
+
+HOST = '192.168.1.42'   # ← IP соседа (узнать: ipconfig на его компе)
+PORT = 5000
+
+W, H = 800, 500
+PADDLE_W, PADDLE_H = 15, 90
+BALL_SIZE = 15
+
+sock = socket.create_connection((HOST, PORT))
+print("Подключился к серверу!")
+
+state = {}
+my_paddle = H/2 - PADDLE_H/2
+
+def receiver():
+    global state
+    buf = ""
+    while True:
+        try:
+            data = sock.recv(4096).decode()
+            if not data: break
+            buf += data
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                state = json.loads(line)
+        except:
+            break
+
+threading.Thread(target=receiver, daemon=True).start()
+
+pygame.init()
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("Pong — КЛИЕНТ (ты справа)")
+font = pygame.font.SysFont("Arial", 40)
+clock = pygame.time.Clock()
+
+running = True
+while running:
+    for e in pygame.event.get():
+        if e.type == pygame.QUIT:
+            running = False
+
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_UP]:
+        my_paddle -= 7
+    if keys[pygame.K_DOWN]:
+        my_paddle += 7
+    my_paddle = max(0, min(H - PADDLE_H, my_paddle))
+
+    try:
+        sock.sendall((json.dumps({"p2": my_paddle}) + "\n").encode())
+    except:
+        pass
+
+    screen.fill((20, 20, 30))
+    for y in range(0, H, 30):
+        pygame.draw.rect(screen, (60, 60, 80), (W//2 - 2, y, 4, 15))
+
+    if state:
+        pygame.draw.rect(screen, (0, 220, 255), (30, state["p1"], PADDLE_W, PADDLE_H))
+        pygame.draw.rect(screen, (255, 90, 90), (W - 30 - PADDLE_W, my_paddle, PADDLE_W, PADDLE_H))
+        b = state["ball"]
+        pygame.draw.rect(screen, (255, 255, 255), (b["x"], b["y"], BALL_SIZE, BALL_SIZE))
+
+        s1 = font.render(str(state["score1"]), True, (255, 255, 255))
+        s2 = font.render(str(state["score2"]), True, (255, 255, 255))
+        screen.blit(s1, (W//2 - 60, 20))
+        screen.blit(s2, (W//2 + 40, 20))
+
+        if state["score1"] >= 5:
+            win = font.render("СОСЕД ВЫИГРАЛ 😢", True, (255, 80, 80))
+            screen.blit(win, (W//2 - 160, H//2 - 20))
+        elif state["score2"] >= 5:
+            win = font.render("ТЫ ВЫИГРАЛ! 🎉", True, (0, 255, 100))
+            screen.blit(win, (W//2 - 150, H//2 - 20))
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()

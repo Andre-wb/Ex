@@ -1,48 +1,113 @@
-import socket, threading, json, tkinter as tk
-
-HOST = '192.168.1.42'   # ← IP соседа
-PORT = 5000
+import tkinter as tk
 
 W, H = 800, 500
 PADDLE_W, PADDLE_H = 15, 90
 BALL_SIZE = 15
+WIN_SCORE = 5
+PADDLE_SPEED = 7
 
-sock = socket.create_connection((HOST, PORT))
-print("Подключился к серверу!")
+state = {
+    "ball": {"x": W/2, "y": H/2, "vx": 5, "vy": 4},
+    "p1": H/2 - PADDLE_H/2,      # левая (W/S)
+    "p2": H/2 - PADDLE_H/2,      # правая (↑/↓)
+    "score1": 0,
+    "score2": 0,
+    "game_over": False,
+    "pause": 0,                  # кадры паузы после гола
+}
 
-state = {}
-my_paddle = H/2 - PADDLE_H/2
-lock = threading.Lock()
+def reset_ball(direction=1):
+    state["ball"] = {"x": W/2, "y": H/2, "vx": 5 * direction, "vy": 4}
+    state["pause"] = 45  # ~0.75 сек пауза
 
-def receiver():
-    global state
-    buf = ""
-    while True:
-        try:
-            data = sock.recv(4096).decode()
-            if not data: break
-            buf += data
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                with lock:
-                    state = json.loads(line)
-        except:
-            break
+def physics():
+    if state["game_over"]:
+        return
 
-threading.Thread(target=receiver, daemon=True).start()
+    # пауза после гола
+    if state["pause"] > 0:
+        state["pause"] -= 1
+        return
 
-# --- Tkinter (клиент играет справа) ---
+    b = state["ball"]
+    b["x"] += b["vx"]
+    b["y"] += b["vy"]
+
+    # отскок от верха/низа
+    if b["y"] <= 0:
+        b["y"] = 0
+        b["vy"] *= -1
+    elif b["y"] + BALL_SIZE >= H:
+        b["y"] = H - BALL_SIZE
+        b["vy"] *= -1
+
+    # левая ракетка (p1)
+    if b["x"] <= 30 + PADDLE_W and b["x"] > 30:
+        if state["p1"] < b["y"] + BALL_SIZE and b["y"] < state["p1"] + PADDLE_H:
+            b["x"] = 30 + PADDLE_W
+            b["vx"] = abs(b["vx"])
+            offset = (b["y"] + BALL_SIZE/2 - (state["p1"] + PADDLE_H/2)) / (PADDLE_H/2)
+            b["vy"] += offset * 2
+            # ограничение скорости
+            b["vy"] = max(-12, min(12, b["vy"]))
+
+    # правая ракетка (p2)
+    if b["x"] + BALL_SIZE >= W - 30 - PADDLE_W and b["x"] < W - 30:
+        if state["p2"] < b["y"] + BALL_SIZE and b["y"] < state["p2"] + PADDLE_H:
+            b["x"] = W - 30 - PADDLE_W - BALL_SIZE
+            b["vx"] = -abs(b["vx"])
+            offset = (b["y"] + BALL_SIZE/2 - (state["p2"] + PADDLE_H/2)) / (PADDLE_H/2)
+            b["vy"] += offset * 2
+            b["vy"] = max(-12, min(12, b["vy"]))
+
+    # голы
+    if b["x"] < 0:
+        state["score2"] += 1
+        check_win()
+        if not state["game_over"]:
+            reset_ball(1)
+    elif b["x"] > W:
+        state["score1"] += 1
+        check_win()
+        if not state["game_over"]:
+            reset_ball(-1)
+
+def check_win():
+    if state["score1"] >= WIN_SCORE or state["score2"] >= WIN_SCORE:
+        state["game_over"] = True
+
+def move_paddles(keys):
+    if state["game_over"]:
+        return
+    # левый — W/S
+    if 'w' in keys:
+        state["p1"] -= PADDLE_SPEED
+    if 's' in keys:
+        state["p1"] += PADDLE_SPEED
+    state["p1"] = max(0, min(H - PADDLE_H, state["p1"]))
+
+    # правый — стрелки
+    if 'Up' in keys:
+        state["p2"] -= PADDLE_SPEED
+    if 'Down' in keys:
+        state["p2"] += PADDLE_SPEED
+    state["p2"] = max(0, min(H - PADDLE_H, state["p2"]))
+
+# --- Tkinter ---
 root = tk.Tk()
-root.title("Pong КЛИЕНТ (ты справа, ↑/↓)")
+root.title("Pong — Игрок 1: W/S   |   Игрок 2: ↑/↓   |   R — рестарт")
 canvas = tk.Canvas(root, width=W, height=H, bg="#14141e")
 canvas.pack()
 
+# сетка
 for y in range(0, H, 30):
     canvas.create_rectangle(W//2 - 2, y, W//2 + 2, y + 15, fill="#3c3c50", outline="")
 
-paddle1 = canvas.create_rectangle(30, H/2, 30 + PADDLE_W, H/2 + PADDLE_H,
+paddle1 = canvas.create_rectangle(30, state["p1"], 30 + PADDLE_W,
+                                   state["p1"] + PADDLE_H,
                                    fill="#00dcff", outline="")
-paddle2 = canvas.create_rectangle(W - 30 - PADDLE_W, my_paddle, W - 30, my_paddle + PADDLE_H,
+paddle2 = canvas.create_rectangle(W - 30 - PADDLE_W, state["p2"], W - 30,
+                                   state["p2"] + PADDLE_H,
                                    fill="#ff5a5a", outline="")
 ball = canvas.create_oval(0, 0, BALL_SIZE, BALL_SIZE, fill="white", outline="")
 
@@ -50,12 +115,32 @@ score1_text = canvas.create_text(W//2 - 60, 30, text="0", fill="white",
                                   font=("Arial", 32, "bold"))
 score2_text = canvas.create_text(W//2 + 60, 30, text="0", fill="white",
                                   font=("Arial", 32, "bold"))
-win_text = canvas.create_text(W//2, H//2, text="", fill="#00ff64",
-                               font=("Arial", 28, "bold"))
 
+# подписи игроков
+canvas.create_text(80, H - 20, text="W / S", fill="#00dcff",
+                   font=("Arial", 14))
+canvas.create_text(W - 80, H - 20, text="↑ / ↓", fill="#ff5a5a",
+                   font=("Arial", 14))
+
+win_text = canvas.create_text(W//2, H//2 - 20, text="", fill="#00ff64",
+                               font=("Arial", 32, "bold"))
+hint_text = canvas.create_text(W//2, H//2 + 30, text="", fill="#aaaaaa",
+                                font=("Arial", 16))
+
+# --- Ввод ---
 keys = set()
+
 def on_press(e):
+    if e.keysym == 'r' or e.keysym == 'R':
+        state["score1"] = 0
+        state["score2"] = 0
+        state["game_over"] = False
+        state["p1"] = H/2 - PADDLE_H/2
+        state["p2"] = H/2 - PADDLE_H/2
+        reset_ball(1)
+        return
     keys.add(e.keysym)
+
 def on_release(e):
     keys.discard(e.keysym)
 
@@ -63,41 +148,31 @@ root.bind("<KeyPress>", on_press)
 root.bind("<KeyRelease>", on_release)
 root.focus_force()
 
-def move_client():
-    global my_paddle
-    if 'Up' in keys:
-        my_paddle -= 7
-    if 'Down' in keys:
-        my_paddle += 7
-    my_paddle = max(0, min(H - PADDLE_H, my_paddle))
-    try:
-        sock.sendall((json.dumps({"p2": my_paddle}) + "\n").encode())
-    except:
-        pass
-    root.after(16, move_client)
-
-move_client()
+# --- Игровой цикл ---
+def tick():
+    move_paddles(keys)
+    physics()
+    draw()
+    root.after(16, tick)  # ~60 FPS
 
 def draw():
-    with lock:
-        snap = state.copy() if state else {}
+    b = state["ball"]
+    canvas.coords(paddle1, 30, state["p1"], 30 + PADDLE_W, state["p1"] + PADDLE_H)
+    canvas.coords(paddle2, W - 30 - PADDLE_W, state["p2"], W - 30, state["p2"] + PADDLE_H)
+    canvas.coords(ball, b["x"], b["y"], b["x"] + BALL_SIZE, b["y"] + BALL_SIZE)
 
-    if snap:
-        canvas.coords(paddle1, 30, snap["p1"], 30 + PADDLE_W, snap["p1"] + PADDLE_H)
-        canvas.coords(ball, snap["ball"]["x"], snap["ball"]["y"],
-                      snap["ball"]["x"] + BALL_SIZE, snap["ball"]["y"] + BALL_SIZE)
-        canvas.itemconfig(score1_text, text=str(snap["score1"]))
-        canvas.itemconfig(score2_text, text=str(snap["score2"]))
+    canvas.itemconfig(score1_text, text=str(state["score1"]))
+    canvas.itemconfig(score2_text, text=str(state["score2"]))
 
-        if snap["score1"] >= 5:
-            canvas.itemconfig(win_text, text="СОСЕД ВЫИГРАЛ", fill="#ff5050")
-        elif snap["score2"] >= 5:
-            canvas.itemconfig(win_text, text="ТЫ ВЫИГРАЛ!", fill="#00ff64")
+    if state["game_over"]:
+        if state["score1"] > state["score2"]:
+            canvas.itemconfig(win_text, text="ИГРОК 1 ПОБЕДИЛ!", fill="#00dcff")
         else:
-            canvas.itemconfig(win_text, text="")
+            canvas.itemconfig(win_text, text="ИГРОК 2 ПОБЕДИЛ!", fill="#ff5a5a")
+        canvas.itemconfig(hint_text, text="Нажми R для новой игры")
+    else:
+        canvas.itemconfig(win_text, text="")
+        canvas.itemconfig(hint_text, text="")
 
-    canvas.coords(paddle2, W - 30 - PADDLE_W, my_paddle, W - 30, my_paddle + PADDLE_H)
-    root.after(16, draw)
-
-draw()
+tick()
 root.mainloop()
